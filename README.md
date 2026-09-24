@@ -60,6 +60,15 @@ chmod +x sliding_puzzle.py
 ./sliding_puzzle.py
 ```
 
+## Running Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+Tests run headlessly (no window) using SDL's dummy video driver.
+
 ## Customization
 
 You can easily adjust the difficulty by changing the grid size in `sliding_puzzle.py`:

@@ -43,19 +43,22 @@ class Tile:
 
     def __init__(self, number: int, pos: Tuple[int, int], image_rect: pygame.Rect):
         self.number = number  # 0 represents empty tile
-        self.grid_pos = list(pos)  # Current position in grid
-        self.target_pos = list(pos)  # Target position for animation
-        self.current_pixel_pos = [0, 0]  # Current pixel position for smooth animation
+        self.grid_pos = list(pos)  # Logical position in grid (updated immediately on move)
+        self.current_pixel_pos = self.target_pixel_pos()  # Rendered position, animates toward grid_pos
         self.image_rect = image_rect  # The portion of the image this tile shows
 
-    def update_position(self, new_pos: Tuple[int, int]):
-        """Set a new target position for the tile to animate to."""
-        self.target_pos = list(new_pos)
+    def target_pixel_pos(self) -> List[float]:
+        """Pixel position (relative to the grid origin) for the tile's grid position."""
+        return [self.grid_pos[0] * (TILE_SIZE + GRID_MARGIN),
+                self.grid_pos[1] * (TILE_SIZE + GRID_MARGIN)]
+
+    def snap_to_grid(self):
+        """Jump straight to the grid position without animating."""
+        self.current_pixel_pos = self.target_pixel_pos()
 
     def animate(self):
-        """Smoothly animate tile to target position."""
-        target_pixel_x = self.target_pos[0] * (TILE_SIZE + GRID_MARGIN)
-        target_pixel_y = self.target_pos[1] * (TILE_SIZE + GRID_MARGIN)
+        """Smoothly animate tile toward its grid position."""
+        target_pixel_x, target_pixel_y = self.target_pixel_pos()
 
         # Smooth animation
         dx = target_pixel_x - self.current_pixel_pos[0]
@@ -71,13 +74,9 @@ class Tile:
         else:
             self.current_pixel_pos[1] = target_pixel_y
 
-        # Update grid position when animation completes
-        if self.current_pixel_pos[0] == target_pixel_x and self.current_pixel_pos[1] == target_pixel_y:
-            self.grid_pos = list(self.target_pos)
-
     def is_animating(self) -> bool:
         """Check if tile is currently animating."""
-        return self.grid_pos != self.target_pos
+        return self.current_pixel_pos != self.target_pixel_pos()
 
 
 class Button:
@@ -213,29 +212,32 @@ class SlidingPuzzle:
                     TILE_SIZE
                 )
 
-                tile = Tile(tile_num, (col, row), image_rect)
-                tile.current_pixel_pos = [col * (TILE_SIZE + GRID_MARGIN),
-                                         row * (TILE_SIZE + GRID_MARGIN)]
-                self.tiles.append(tile)
+                self.tiles.append(Tile(tile_num, (col, row), image_rect))
 
-        # Shuffle the puzzle
+        # Shuffle the puzzle (re-shuffle in the unlikely case it lands solved)
         self.shuffle_puzzle()
+        while self.check_win_condition():
+            self.shuffle_puzzle()
+
+        # Show the shuffled board immediately rather than animating the shuffle
+        for tile in self.tiles:
+            tile.snap_to_grid()
 
         # Reset game state
         self.moves = 0
         self.start_time = time.time()
         self.game_won = False
+        self.animating = False
 
     def shuffle_puzzle(self, num_moves: int = 100):
         """Shuffle the puzzle using valid moves to ensure solvability."""
+        previous_empty = None
         for _ in range(num_moves):
-            # Get valid moves
-            valid_moves = self.get_valid_moves()
-            if valid_moves:
-                # Pick a random valid move
-                move_pos = random.choice(valid_moves)
-                # Swap without counting as a player move
-                self.swap_tiles(move_pos, count_move=False)
+            # Don't immediately undo the last move, so the shuffle actually scrambles
+            valid_moves = [pos for pos in self.get_valid_moves() if pos != previous_empty]
+            previous_empty = tuple(self.empty_pos)
+            # Swap without counting as a player move
+            self.swap_tiles(random.choice(valid_moves), count_move=False)
 
     def get_valid_moves(self) -> List[Tuple[int, int]]:
         """Get list of tiles that can be moved (adjacent to empty space)."""
@@ -261,18 +263,12 @@ class SlidingPuzzle:
     def swap_tiles(self, tile_pos: Tuple[int, int], count_move: bool = True):
         """Swap a tile with the empty space."""
         tile = self.get_tile_at_pos(tile_pos)
-        if tile and tile.number != 0:
-            # Update tile position
-            old_pos = tile.grid_pos.copy()
-            tile.update_position(tuple(self.empty_pos))
-
-            # Update empty tile position
-            empty_tile = self.get_tile_at_pos(tuple(self.empty_pos))
-            if empty_tile:
-                empty_tile.update_position(tuple(old_pos))
-
-            # Update empty position
-            self.empty_pos = list(old_pos)
+        empty_tile = self.get_tile_at_pos(tuple(self.empty_pos))
+        if tile and empty_tile and tile.number != 0:
+            # Swap logical positions now; pixel positions animate in update()
+            tile.grid_pos, empty_tile.grid_pos = empty_tile.grid_pos, tile.grid_pos
+            empty_tile.snap_to_grid()  # The empty tile is never drawn
+            self.empty_pos = list(empty_tile.grid_pos)
 
             # Count move if it's a player move
             if count_move:
@@ -284,9 +280,17 @@ class SlidingPuzzle:
         if self.game_won or self.animating:
             return
 
-        # Convert mouse position to grid position
-        grid_x = (mouse_pos[0] - self.grid_offset[0]) // (TILE_SIZE + GRID_MARGIN)
-        grid_y = (mouse_pos[1] - self.grid_offset[1]) // (TILE_SIZE + GRID_MARGIN)
+        # Convert mouse position to grid position (tiles are drawn GRID_MARGIN in from grid_offset)
+        local_x = mouse_pos[0] - self.grid_offset[0] - GRID_MARGIN
+        local_y = mouse_pos[1] - self.grid_offset[1] - GRID_MARGIN
+        if local_x < 0 or local_y < 0:
+            return
+        grid_x, offset_x = divmod(local_x, TILE_SIZE + GRID_MARGIN)
+        grid_y, offset_y = divmod(local_y, TILE_SIZE + GRID_MARGIN)
+
+        # Ignore clicks in the gaps between tiles
+        if offset_x >= TILE_SIZE or offset_y >= TILE_SIZE:
+            return
 
         # Check if click is within grid
         if 0 <= grid_x < self.grid_size and 0 <= grid_y < self.grid_size:
